@@ -44,7 +44,7 @@ npx octomatelabs-data init
 ```sh
 npm ci && npm run typecheck && npm test && npm run build   # dist/cli.mjs
 ```
-Release: `git tag v0.1.0 && git push --tags` (GitHub Actions compila binarios para Linux, macOS y Windows).
+Release: `git tag vX.Y.Z && git push --tags` (GitHub Actions compila binarios para Linux, macOS y Windows).
 
 ## Transparencia: ver qué se manda
 

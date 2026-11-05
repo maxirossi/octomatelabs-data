@@ -11,4 +11,9 @@ echo "Descargando $url"
 curl -fsSL "$url" -o "$dest/octomate-data"; chmod +x "$dest/octomate-data"
 echo "Instalado en $dest/octomate-data"
 case ":$PATH:" in *":$dest:"*) ;; *) echo "Agregá $dest a tu PATH.";; esac
-echo "Siguiente: octomate-data init && octomate-data install-service"
+if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ "$os" = darwin ]; then
+  echo "Abriendo el asistente de configuración…"
+  "$dest/octomate-data" setup
+else
+  echo "Sin entorno gráfico. Siguiente: octomate-data init && octomate-data install-service"
+fi

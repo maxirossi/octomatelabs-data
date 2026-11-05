@@ -8,4 +8,5 @@ Write-Host "Descargando $url"
 Invoke-WebRequest -Uri $url -OutFile (Join-Path $dest "octomate-data.exe")
 $path = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($path -notlike "*$dest*") { [Environment]::SetEnvironmentVariable("Path", "$path;$dest", "User") }
-Write-Host "Instalado en $dest. Abrí una terminal nueva y corré: octomate-data init; octomate-data install-service"
+Write-Host "Instalado en $dest. Abriendo el asistente de configuración..."
+& (Join-Path $dest "octomate-data.exe") setup

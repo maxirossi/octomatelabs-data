@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import readline from 'node:readline/promises'
+import { execFile } from 'node:child_process'
 import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, requireKey } from './config.ts'
 import { appendSent } from './sentlog.ts'
 import { startUi } from './ui.ts'
@@ -16,6 +17,7 @@ Uso:
   octomate-data once                 Un solo ciclo de sincronización
   octomate-data backfill [--days N]  Importa el histórico (default 30 días)
   octomate-data preview [--days N]   Muestra el JSON exacto que se enviaría (ya sanitizado), sin enviar nada
+  octomate-data setup                Asistente visual: abre el navegador, pide la key e instala el servicio
   octomate-data ui [--port N]        Panel local (127.0.0.1:4567): estado, pausa, modo y lo enviado
   octomate-data status               Muestra configuración y estado
   octomate-data ping                 Prueba la conexión con la key
@@ -60,6 +62,12 @@ async function run() {
   }
 }
 
+function openBrowser(url: string) {
+  const [cmd, args]: [string, string[]] = process.platform === 'darwin' ? ['open', [url]]
+    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]]
+  execFile(cmd, args, () => { /* sin navegador: ya se imprimió el link */ }).unref()
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2)
   switch (cmd) {
@@ -94,8 +102,16 @@ async function main() {
     case 'ui': {
       const i = args.indexOf('--port')
       const port = i >= 0 ? Number(args[i + 1]) : 4567
-      startUi(port)
-      console.log(`Panel en http://localhost:${port} (Ctrl+C para cerrar)`); return
+      const r = await startUi(port)
+      console.log(`Panel en http://localhost:${r.port} (Ctrl+C para cerrar)`)
+      if (!args.includes('--no-open')) openBrowser(`http://localhost:${r.port}`); return
+    }
+    case 'setup': {
+      // Asistente visual: abre el navegador, pide la key, la valida, instala el servicio y termina.
+      const r = await startUi(4567, { setup: { onDone: () => { console.log('Listo. octomate-data quedó corriendo en segundo plano.'); process.exit(0) } } })
+      const u = `http://localhost:${r.port}`
+      console.log(`Abriendo ${u} para configurar la key… (si no se abre solo, copiá ese link en el navegador)`)
+      openBrowser(u); return
     }
     case 'status': {
       const cfg = loadConfig(); const st = loadState(STATE_PATH)
