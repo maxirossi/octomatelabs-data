@@ -56,7 +56,33 @@ function promptText(content: unknown): string | null {
   return t || null
 }
 
-function buildEvent(file: string, lines: Line[], prompt: string | undefined, o: ReadOptions): UsageEvent | null {
+const clip = (t: string, n: number) => (t.length > n ? t.slice(0, n) + '…' : t)
+
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
+  return ''
+}
+
+/** Resumen de una llamada a herramienta: "Bash: git status" / "Read: /ruta/archivo". */
+function toolCallSummary(b: any): string {
+  const i = b?.input ?? {}
+  const arg = i.command ?? i.file_path ?? i.path ?? i.pattern ?? i.url ?? i.description ?? i.prompt ?? i.query ?? ''
+  return `${b?.name ?? 'tool'}${arg ? ': ' + clip(String(arg).replace(/\s+/g, ' '), 300) : ''}`
+}
+
+/** Resumen de los resultados de herramientas que recibió el modelo antes de este turno. */
+function toolResultsSummary(content: unknown, calls: Map<string, string>): string | null {
+  if (!Array.isArray(content)) return null
+  const parts = content.filter((b) => b?.type === 'tool_result').map((b) => {
+    const label = calls.get(b.tool_use_id) ?? 'tool'
+    const out = clip(resultText(b.content).trim(), 600)
+    return `[${label}]${b.is_error ? ' (error)' : ''}\n${out || '(sin salida)'}`
+  })
+  return parts.length ? parts.join('\n\n') : null
+}
+
+function buildEvent(file: string, lines: Line[], prompt: string | undefined, results: string | undefined, o: ReadOptions): UsageEvent | null {
   const first = lines[0].obj
   const last = lines[lines.length - 1].obj
   const msg = last.message ?? first.message
@@ -68,7 +94,8 @@ function buildEvent(file: string, lines: Line[], prompt: string | undefined, o: 
 
   const blocks = lines.flatMap((l) => (Array.isArray(l.obj.message?.content) ? l.obj.message.content : []))
   const tools = [...new Set<string>(blocks.filter((b: any) => b?.type === 'tool_use').map((b: any) => String(b.name)))]
-  const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('\n')
+  const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('\n').trim()
+  const calls = blocks.filter((b: any) => b?.type === 'tool_use').map(toolCallSummary)
   const agent = subagentType(file)
   const n = (v: unknown) => (typeof v === 'number' && v > 0 ? Math.floor(v) : 0)
 
@@ -96,9 +123,15 @@ function buildEvent(file: string, lines: Line[], prompt: string | undefined, o: 
     },
   }
   if (!o.metadataOnly) {
-    ev.request_text = prompt ? redact(prompt.slice(0, MAX_TEXT)) : null
-    ev.response_text = text ? redact(text) : null
+    // Contexto de la conversación: el prompt del usuario + (si es un paso del loop de herramientas)
+    // lo que devolvieron las herramientas. La respuesta es el texto o, si solo llamó herramientas, esas llamadas.
+    const req = [results ? (prompt ? clip(prompt, 1500) + '\n\n↳ ' : '↳ ') + results : prompt].filter(Boolean).join('')
+    const res = [text, calls.length ? calls.map((c) => '→ ' + c).join('\n') : ''].filter(Boolean).join('\n\n')
+    ev.request_text = req ? redact(req.slice(0, MAX_TEXT)) : null
+    ev.response_text = res ? redact(res.slice(0, MAX_TEXT)) : null
   }
+  // Sin contexto útil (ni pedido ni respuesta) no se guarda el turno
+  if (!o.metadataOnly && !ev.request_text && !ev.response_text) return null
   return ev
 }
 
@@ -113,7 +146,9 @@ export function readFile(file: string, prev: FileState | undefined, o: ReadOptio
   let offset = prev?.offset ?? 0
   if (offset > st.size) offset = 0 // el archivo fue reescrito/truncado
   let prompt = offset === 0 ? undefined : prev?.lastPrompt
-  if (st.size === offset) return { events: [], state: { offset, lastPrompt: prompt } }
+  let results = offset === 0 ? undefined : prev?.lastResults
+  const callNames = new Map<string, string>()
+  if (st.size === offset) return { events: [], state: { offset, lastPrompt: prompt, lastResults: results } }
 
   const fd = fs.openSync(file, 'r')
   let buf: Buffer
@@ -123,17 +158,17 @@ export function readFile(file: string, prev: FileState | undefined, o: ReadOptio
   } finally { fs.closeSync(fd) }
 
   const lastNl = buf.lastIndexOf(0x0a)
-  if (lastNl === -1) return { events: [], state: { offset, lastPrompt: prompt } }
+  if (lastNl === -1) return { events: [], state: { offset, lastPrompt: prompt, lastResults: results } }
   const consumed = lastNl + 1
 
   const events: UsageEvent[] = []
-  let group: { id: string; lines: Line[]; promptAtStart: string | undefined } | null = null
+  let group: { id: string; lines: Line[]; promptAtStart: string | undefined; resultsAtStart: string | undefined } | null = null
   let pos = 0
   const flush = () => {
     if (!group) return
-    const ev = buildEvent(file, group.lines, group.promptAtStart, o)
+    const ev = buildEvent(file, group.lines, group.promptAtStart, group.resultsAtStart, o)
     if (ev) events.push(ev)
-    if (group.promptAtStart !== undefined) prompt = undefined // el prompt se atribuye solo al primer turno
+    results = undefined
     group = null
   }
 
@@ -148,24 +183,31 @@ export function readFile(file: string, prev: FileState | undefined, o: ReadOptio
 
     if (obj.type === 'assistant' && obj.message?.id) {
       if (group && group.id !== obj.message.id) flush()
-      if (!group) group = { id: obj.message.id, lines: [], promptAtStart: prompt }
+      if (!group) group = { id: obj.message.id, lines: [], promptAtStart: prompt, resultsAtStart: results }
       group.lines.push({ start, obj })
+      for (const b of Array.isArray(obj.message.content) ? obj.message.content : [])
+        if (b?.type === 'tool_use' && b.id) callNames.set(b.id, toolCallSummary(b))
     } else if (obj.type === 'user') {
       flush()
       const p = promptText(obj.message?.content)
-      if (p) prompt = p
+      if (p) { prompt = p; results = undefined }
+      else {
+        const r = toolResultsSummary(obj.message?.content, callNames)
+        if (r) results = r
+      }
     }
   }
 
   let newOffset = offset + consumed
-  const g = group as { lines: Line[]; promptAtStart: string | undefined } | null
+  const g = group as { lines: Line[]; promptAtStart: string | undefined; resultsAtStart: string | undefined } | null
   if (g && o.settleMs > 0 && o.now - st.mtimeMs < o.settleMs) {
     // último turno posiblemente incompleto: se vuelve a leer desde su primera línea
     newOffset = g.lines[0].start
     prompt = g.promptAtStart
+    results = g.resultsAtStart
     group = null
   } else {
     flush()
   }
-  return { events, state: { offset: newOffset, lastPrompt: prompt } }
+  return { events, state: { offset: newOffset, lastPrompt: prompt, lastResults: results } }
 }

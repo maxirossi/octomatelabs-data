@@ -24,6 +24,7 @@ export interface UsageEvent {
 export interface FileState {
   offset: number
   lastPrompt?: string
+  lastResults?: string
   lastPromptAt?: string
   /** Copilot: se relee el archivo completo (delta log), así que se recuerdan los requests ya enviados. */
   mtimeMs?: number

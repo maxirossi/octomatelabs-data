@@ -23,8 +23,8 @@ test('fusiona los bloques de un mismo mensaje en un evento y atribuye el prompt'
   fs.writeFileSync(f,
     user('hacé X con sk-ant-abcdefghijklmnopqrstuvwxyz123456') +
     asst('m1', '2026-11-05T10:00:01Z', [{ type: 'thinking' }], {}) +
-    asst('m1', '2026-11-05T10:00:02Z', [{ type: 'text', text: 'listo' }, { type: 'tool_use', name: 'Bash' }]) +
-    user([{ type: 'tool_result' }]) +
+    asst('m1', '2026-11-05T10:00:02Z', [{ type: 'text', text: 'listo' }, { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }]) +
+    user([{ type: 'tool_result', tool_use_id: 't1', content: 'a.txt' }]) +
     asst('m2', '2026-11-05T10:00:05Z', [{ type: 'text', text: 'fin' }]))
   const r = readFile(f, undefined, opts)
   assert.equal(r.events.length, 2)
@@ -33,10 +33,26 @@ test('fusiona los bloques de un mismo mensaje en un evento y atribuye el prompt'
   assert.equal(a.output_tokens, 50)           // no se suma por bloque
   assert.equal(a.thinking_tokens, 7)
   assert.deepEqual(a.tools, ['Bash'])
-  assert.equal(a.response_text, 'listo')
+  assert.equal(a.response_text, 'listo\n\n→ Bash: ls')
   assert.ok(a.request_text?.includes('[REDACTED]') && !a.request_text.includes('sk-ant'))
-  assert.equal(b.request_text, null)          // el prompt va solo en el primer turno
+  // el paso siguiente conserva el prompt y suma lo que devolvió la herramienta
+  assert.ok(b.request_text?.includes('hacé X') && b.request_text.includes('[Bash: ls]') && b.request_text.includes('a.txt'))
   assert.equal(a.client, 'cli'); assert.equal(a.project, '/p')
+})
+
+test('turnos solo con herramientas llevan contexto y turnos sin nada no se guardan', () => {
+  const f = path.join(tmp(), 's.jsonl')
+  fs.writeFileSync(f, user('listá') +
+    asst('m1', '2026-11-05T10:00:01Z', [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/a.ts' } }]) +
+    user([{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'contenido' }] }]) +
+    asst('m2', '2026-11-05T10:00:02Z', [{ type: 'thinking' }]))
+  const [a, b] = readFile(f, undefined, opts).events
+  assert.equal(a.response_text, '→ Read: /a.ts')
+  assert.equal(a.request_text, 'listá')
+  assert.ok(b.request_text?.includes('listá') && b.request_text.includes('contenido')) // el paso siguiente hereda el contexto
+  const g = path.join(tmp(), 'g.jsonl')
+  fs.writeFileSync(g, asst('m9', '2026-11-05T10:00:01Z', [{ type: 'thinking' }]))
+  assert.equal(readFile(g, undefined, opts).events.length, 0) // sin request ni response: no se guarda
 })
 
 test('metadataOnly no incluye textos', () => {
