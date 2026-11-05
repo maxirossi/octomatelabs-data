@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import { execFile } from 'node:child_process'
-import { addProfile, removeProfile } from './accounts.ts'
+import { addProfile, checkKeyEmail, mismatchReason, removeProfile, validEmail } from './accounts.ts'
 import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, loadProfiles, requireKey, syncTargets } from './config.ts'
 import { appendSent } from './sentlog.ts'
 import { startUi } from './ui.ts'
@@ -21,7 +21,7 @@ Uso:
   octomate-data preview [--days N]   Muestra el JSON exacto que se enviaría (ya sanitizado), sin enviar nada
   octomate-data setup                Asistente visual: abre el navegador, pide la key e instala el servicio
   octomate-data ui [--port N]        Panel local (127.0.0.1:4567): estado, pausa, modo y lo enviado
-  octomate-data account add <nombre> <key>   Agrega otra cuenta de Claude Code (crea el comando claude-<nombre>)
+  octomate-data account add <nombre> <email> <key>   Agrega otra cuenta de Claude Code (crea el comando claude-<nombre>)
   octomate-data account list | remove <nombre>
   octomate-data status               Muestra configuración y estado
   octomate-data ping                 Prueba la conexión con la key
@@ -37,12 +37,13 @@ async function init() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   try {
     const url = (await rl.question(`URL de la API [${cfg.url}]: `)).trim() || cfg.url
-    const key = (await rl.question('Key (omk_...): ')).trim() || cfg.key
-    const r = await ping(url.replace(/\/+$/, ''), key)
-    if (!r.ok) throw new Error(`No se pudo validar la key (${r.status || 'sin conexión'}${r.error ? ': ' + r.error : ''})`)
+    const email = ((await rl.question(`Email de tu cuenta de Claude Code [${cfg.accountEmail}]: `)).trim() || cfg.accountEmail).toLowerCase()
+    if (!validEmail(email)) throw new Error('Email inválido')
+    const key = (await rl.question('Key (omk_..., generada para ese email en "Mi consumo"): ')).trim() || cfg.key
+    const r = await checkKeyEmail(url.replace(/\/+$/, ''), key, email)
     fs.mkdirSync(HOME_DIR, { recursive: true })
-    fs.writeFileSync(ENV_PATH, `OCTOMATELABS_URL=${url}\nOCTOMATELABS_KEY=${key}\n`, { mode: 0o600 })
-    console.log(`✔ Conectado${r.label ? ` (key "${r.label}")` : ''}. Guardado en ${ENV_PATH}`)
+    fs.writeFileSync(ENV_PATH, `OCTOMATELABS_URL=${url}\nOCTOMATELABS_KEY=${key}\nACCOUNT_EMAIL=${email}\n`, { mode: 0o600 })
+    console.log(`✔ Conectado${r.label ? ` (key "${r.label}")` : ''} como ${email}. Guardado en ${ENV_PATH}`)
     console.log('Siguiente paso: "octomate-data install-service" para que corra solo, o "octomate-data run".')
   } finally { rl.close() }
 }
@@ -53,6 +54,7 @@ async function run() {
   log(`Sincronizando ${cfg.claudeDir}${cfg.copilotDir ? ' + ' + cfg.copilotDir : ''} → ${cfg.url} cada ${cfg.intervalSeconds}s${cfg.metadataOnly ? ' (solo métricas)' : ''}`)
   // Panel local siempre disponible mientras el servicio corre (http://localhost:4567)
   startUi(4567, { fixedPort: true }).then((r) => log(`Panel en http://localhost:${r.port}`)).catch((e) => log(`panel no disponible: ${(e as Error).message}`))
+  const warned = new Map<string, string>()
   let stop = false
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { stop = true; process.exit(0) })
   while (!stop) {
@@ -61,6 +63,9 @@ async function run() {
       if (fs.existsSync(PAUSE_PATH)) { await new Promise((r) => setTimeout(r, cfg.intervalSeconds * 1000)); continue }
       for (const t of syncTargets(cfg)) { // un error en una cuenta no frena a las demás
         try {
+          const why = mismatchReason(t)
+          if (why) { if (warned.get(t.name) !== why) { log(`[${t.name}] ${why}`); warned.set(t.name, why) } continue }
+          warned.delete(t.name)
           const s = await syncOnce(t.cfg, t.statePath, { onEvents: (e, sent) => { if (sent) appendSent(e) } })
           if (s.events) log(`[${t.name}] ${s.inserted} nuevos, ${s.duplicates} duplicados${s.dropped ? `, ${s.dropped} descartados` : ''}`)
         } catch (e) {
@@ -87,7 +92,11 @@ async function main() {
     case 'run': return run()
     case 'once': {
       const cfg = loadConfig(); requireKey(cfg)
-      for (const t of syncTargets(cfg)) console.log(t.name, await syncOnce(t.cfg, t.statePath, { settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
+      for (const t of syncTargets(cfg)) {
+        const why = mismatchReason(t); if (why) { console.log(`[${t.name}] omitida: ${why}`); continue }
+        console.log(t.name, await syncOnce(t.cfg, t.statePath, { settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } }))
+      }
+      return
     }
     case 'backfill': {
       const cfg = loadConfig(); requireKey(cfg)
@@ -99,7 +108,11 @@ async function main() {
       const only = args.indexOf('--account') >= 0 ? args[args.indexOf('--account') + 1] : null
       const targets = syncTargets(cfg).filter((t) => !only || t.name === only)
       if (!targets.length) throw new Error(only ? `No existe la cuenta "${only}"` : 'No hay cuentas configuradas')
-      for (const t of targets) console.log(t.name, await syncOnce(t.cfg, t.statePath, { backfill: true, since, settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
+      for (const t of targets) {
+        const why = mismatchReason(t); if (why) { console.log(`[${t.name}] omitida: ${why}`); continue }
+        console.log(t.name, await syncOnce(t.cfg, t.statePath, { backfill: true, since, settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } }))
+      }
+      return
     }
     case 'preview': {
       const cfg = loadConfig()
@@ -133,19 +146,19 @@ async function main() {
       openBrowser(u); return
     }
     case 'account': {
-      const [sub, name, key] = args
+      const [sub, name, email, key] = args
       if (sub === 'add') {
-        if (!name || !key) throw new Error('Uso: octomate-data account add <nombre> <key omk_...>')
-        const r = await addProfile(name, key)
-        console.log(`✔ Cuenta "${r.profile.name}" agregada${r.label ? ` (key "${r.label}")` : ''}.`)
+        if (!name || !email || !key) throw new Error('Uso: octomate-data account add <nombre> <email de la cuenta de Claude> <key omk_...>')
+        const r = await addProfile(name, email, key)
+        console.log(`✔ Cuenta "${r.profile.name}" (${r.profile.email}) agregada${r.label ? ` (key "${r.label}")` : ''}.`)
         console.log(`  Para usarla, abrí Claude Code con:  ${path.basename(r.command)}   (la primera vez hacé /login con esa cuenta)`)
         if (!r.onPath) console.log(`  Agregá ${path.dirname(r.command)} a tu PATH para que el comando funcione.`)
         console.log('  El servicio la toma en el próximo ciclo (≤ 30 s).'); return
       }
       if (sub === 'remove') { if (!name) throw new Error('Uso: octomate-data account remove <nombre>'); removeProfile(name); console.log(`✔ Cuenta "${name}" quitada (la carpeta de Claude Code no se borra).`); return }
       if (sub === 'list' || !sub) {
-        console.log('default  →  ~/.claude (cuenta principal, config en el .env)')
-        for (const p of loadProfiles()) console.log(`${p.name}  →  ${p.configDir}  (comando: claude-${p.name})`)
+        console.log(`default  →  ~/.claude  ${loadConfig().accountEmail || '(sin email configurado)'}`)
+        for (const p of loadProfiles()) console.log(`${p.name}  →  ${p.configDir}  ${p.email}  (comando: claude-${p.name})`)
         return
       }
       throw new Error('Uso: octomate-data account add|list|remove')

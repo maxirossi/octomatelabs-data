@@ -5,7 +5,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { saveSettings, setEnvVars } from '../src/ui.ts'
 
-const good = { key: 'omk_x', url: 'https://x.test/api', intervalSeconds: 30, claudeDir: os.tmpdir(), copilotEnabled: false, copilotDir: '' }
+const good = { accountEmail: 'a@b.com', key: 'omk_x', url: 'https://x.test/api', intervalSeconds: 30, claudeDir: os.tmpdir(), copilotEnabled: false, copilotDir: '' }
 const errorsOf = async (over: object) => {
   const r = await saveSettings({ ...good, ...over })
   assert.equal(r.ok, false); return (r as { errors: Record<string, string> }).errors
@@ -18,6 +18,8 @@ test('valida la carpeta de Claude, el intervalo y la key', async () => {
   assert.ok((await errorsOf({ intervalSeconds: 2 })).intervalSeconds)
   assert.ok((await errorsOf({ intervalSeconds: 30.5 })).intervalSeconds)
   assert.ok((await errorsOf({ key: 'abc' })).key)
+  assert.ok((await errorsOf({ accountEmail: '' })).accountEmail)
+  assert.ok((await errorsOf({ accountEmail: 'no-mail' })).accountEmail)
 })
 
 test('la carpeta de Copilot solo se valida si Copilot está activado', async () => {

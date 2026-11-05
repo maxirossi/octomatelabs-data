@@ -11,6 +11,8 @@ export const PAUSE_PATH = path.join(HOME_DIR, 'paused')
 export interface Config {
   url: string
   key: string
+  /** Email de la cuenta de Claude Code de esta key (la del .env = cuenta principal). Vacío = sin verificar. */
+  accountEmail: string
   metadataOnly: boolean
   /** "Cifrar información sensible": redacción estricta de claves/tokens/contraseñas en prompts y responses (default: activado). */
   strictRedact: boolean
@@ -56,6 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
   return {
     url,
     key,
+    accountEmail: (get('ACCOUNT_EMAIL') ?? '').trim().toLowerCase(),
     metadataOnly: /^(1|true|yes)$/i.test(get('METADATA_ONLY') ?? ''),
     strictRedact: !/^(0|false|no)$/i.test(get('REDACT_STRICT') ?? ''),
     intervalSeconds: Math.max(5, Number(get('SYNC_INTERVAL_SECONDS')) || 30),
@@ -79,6 +82,7 @@ export const PROFILES_PATH = path.join(HOME_DIR, 'profiles.json')
 export interface Profile {
   name: string
   key: string
+  email: string
   /** Carpeta de configuración de Claude Code de esta cuenta (los transcripts están en <dir>/projects). */
   configDir: string
 }
@@ -90,7 +94,7 @@ export function loadProfiles(file = PROFILES_PATH): Profile[] {
     const arr = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!Array.isArray(arr)) return []
     return arr.filter((p) => p && validProfileName(String(p.name)) && String(p.key).startsWith('omk_') && p.configDir)
-      .map((p) => ({ name: String(p.name), key: String(p.key), configDir: expand(String(p.configDir)) }))
+      .map((p) => ({ name: String(p.name), key: String(p.key), email: String(p.email ?? '').trim().toLowerCase(), configDir: expand(String(p.configDir)) }))
   } catch { return [] }
 }
 
@@ -102,15 +106,19 @@ export function saveProfiles(profiles: Profile[], file = PROFILES_PATH): void {
 
 export const statePathFor = (name: string) => (name === 'default' ? STATE_PATH : path.join(HOME_DIR, `state-${name}.json`))
 
-export interface SyncTarget { name: string; cfg: Config; statePath: string }
+export interface SyncTarget {
+  name: string; cfg: Config; statePath: string
+  /** Email esperado de la sesión de Claude Code y archivo donde Claude Code guarda la sesión activa. */
+  email: string; claudeJson: string
+}
 
 /** Cuenta por defecto + cuentas extra. Copilot (VS Code) no es por cuenta de Claude: solo va con la default. */
 export function syncTargets(base: Config = loadConfig(), profiles: Profile[] = loadProfiles()): SyncTarget[] {
   const targets: SyncTarget[] = []
-  if (base.key) targets.push({ name: 'default', cfg: base, statePath: STATE_PATH })
+  if (base.key) targets.push({ name: 'default', cfg: base, statePath: STATE_PATH, email: base.accountEmail, claudeJson: path.join(os.homedir(), '.claude.json') })
   for (const p of profiles) {
-    targets.push({ name: p.name, statePath: statePathFor(p.name),
-      cfg: { ...base, key: p.key, claudeDir: path.join(p.configDir, 'projects'), copilotDir: null } })
+    targets.push({ name: p.name, statePath: statePathFor(p.name), email: p.email, claudeJson: path.join(p.configDir, '.claude.json'),
+      cfg: { ...base, key: p.key, accountEmail: p.email, claudeDir: path.join(p.configDir, 'projects'), copilotDir: null } })
   }
   return targets
 }

@@ -1,6 +1,8 @@
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import http from 'node:http'
-import { addProfile, launcherPath, removeProfile } from './accounts.ts'
+import { addProfile, checkKeyEmail, launcherPath, loggedInEmail, removeProfile, validEmail } from './accounts.ts'
 import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, loadProfiles, syncTargets } from './config.ts'
 import { LOGO_DATA_URI } from './logo.ts'
 import { ping } from './sender.ts'
@@ -27,7 +29,7 @@ const expandHome = (p: string) => (p.startsWith('~') ? p.replace('~', process.en
 function status() {
   const cfg = loadConfig(); const st = loadState(STATE_PATH)
   return {
-    url: cfg.url, hasKey: !!cfg.key, keyPreview: cfg.key ? cfg.key.slice(0, 12) + '…' : null, metadataOnly: cfg.metadataOnly, strictRedact: cfg.strictRedact,
+    url: cfg.url, accountEmail: cfg.accountEmail, loggedEmail: loggedInEmail(path.join(os.homedir(), '.claude.json')), hasKey: !!cfg.key, keyPreview: cfg.key ? cfg.key.slice(0, 12) + '…' : null, metadataOnly: cfg.metadataOnly, strictRedact: cfg.strictRedact,
     paused: fs.existsSync(PAUSE_PATH), intervalSeconds: cfg.intervalSeconds, claudeDir: cfg.claudeDir,
     copilotEnabled: cfg.copilotDir !== null,
     copilotDir: cfg.copilotDir ?? loadConfig({ ...process.env, COPILOT_ENABLED: 'true' }).copilotDir,
@@ -43,6 +45,7 @@ export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: tr
   const errors: FieldErrors = {}
   const url = cur.url // la URL de la API no es editable desde la UI
   const key = String(b.key ?? '').trim() || cur.key
+  const accountEmail = String(b.accountEmail ?? '').trim().toLowerCase()
   const interval = Number(b.intervalSeconds)
   const claudeDir = expandHome(String(b.claudeDir ?? '').trim())
   const copilotEnabled = b.copilotEnabled === true
@@ -51,6 +54,8 @@ export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: tr
 
   if (!key) errors.key = 'Falta la key'
   else if (!key.startsWith('omk_')) errors.key = 'La key tiene que empezar con omk_'
+  if (!accountEmail) errors.accountEmail = 'Indicá el email de tu cuenta de Claude Code'
+  else if (!validEmail(accountEmail)) errors.accountEmail = 'Email inválido'
   if (!Number.isInteger(interval) || interval < 5 || interval > 3600) errors.intervalSeconds = 'Un número entero entre 5 y 3600 segundos'
   if (!claudeDir) errors.claudeDir = 'Indicá la carpeta de proyectos de Claude Code'
   else if (!isDir(claudeDir)) errors.claudeDir = 'Esa carpeta no existe (¿usás Claude Code en esta máquina?)'
@@ -62,13 +67,11 @@ export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: tr
 
   // La key solo se prueba contra el servidor si cambió algo de la conexión.
   let label: string | null = null
-  if (key !== cur.key || url !== cur.url) {
-    const r = await ping(url, key)
-    if (!r.ok) return { ok: false, errors: { key: `No se pudo validar (${r.status || 'sin conexión con ' + url}${r.error ? ': ' + r.error : ''})` } }
-    label = r.label ?? null
+  if (key !== cur.key || url !== cur.url || accountEmail !== cur.accountEmail) {
+    try { label = (await checkKeyEmail(url, key, accountEmail)).label } catch (e) { return { ok: false, errors: { key: (e as Error).message } } }
   }
   setEnvVars({
-    OCTOMATELABS_URL: url, OCTOMATELABS_KEY: key, SYNC_INTERVAL_SECONDS: String(interval), CLAUDE_PROJECTS_DIR: claudeDir,
+    OCTOMATELABS_URL: url, OCTOMATELABS_KEY: key, ACCOUNT_EMAIL: accountEmail, SYNC_INTERVAL_SECONDS: String(interval), CLAUDE_PROJECTS_DIR: claudeDir,
     COPILOT_ENABLED: String(copilotEnabled), REDACT_STRICT: String(strictRedact), ...(copilotDir ? { COPILOT_STORAGE_DIR: copilotDir } : {}),
   })
   return { ok: true, label }
@@ -126,7 +129,7 @@ function createUiServer(opts: UiOptions): http.Server {
       if (req.method === 'GET' && url.pathname === '/api/sent') return json(res, 200, tailSent(100))
       if (req.method === 'GET' && url.pathname === '/api/preview') return json(res, 200, await preview())
       if (req.method === 'GET' && url.pathname === '/api/accounts') {
-        return json(res, 200, loadProfiles().map((p) => ({ name: p.name, keyPreview: p.key.slice(0, 12) + '…', configDir: p.configDir, command: launcherPath(p.name).split(/[\\/]/).pop() })))
+        return json(res, 200, loadProfiles().map((p) => ({ name: p.name, email: p.email, keyPreview: p.key.slice(0, 12) + '…', configDir: p.configDir, command: launcherPath(p.name).split(/[\\/]/).pop() })))
       }
       if (req.method === 'GET' && url.pathname === '/api/check-path') {
         const p = expandHome(url.searchParams.get('p') ?? '')
@@ -141,7 +144,7 @@ function createUiServer(opts: UiOptions): http.Server {
         if (url.pathname === '/api/accounts/add') {
           const b = await readBody(req)
           try {
-            const r = await addProfile(String(b.name ?? ''), String(b.key ?? ''))
+            const r = await addProfile(String(b.name ?? ''), String(b.email ?? ''), String(b.key ?? ''))
             return json(res, 200, { ok: true, command: launcherPath(r.profile.name), commandName: launcherPath(r.profile.name).split(/[\\/]/).pop(), label: r.label, onPath: r.onPath })
           } catch (e) { return json(res, 200, { ok: false, error: (e as Error).message }) }
         }
@@ -209,6 +212,7 @@ h3{font-size:14px;margin:22px 0 6px}.mut{color:var(--mut)}[hidden]{display:none!
 <form id="sf" class="card" autocomplete="off" novalidate>
 <h2>Conexión y fuentes</h2><p class="sub" id="subt">En OctoMateLabs → <b>Mi consumo</b> → <i>Generar key</i>, y pegala acá.</p>
 <div class="grid">
+<div class="full"><label for="accountEmail">Email de tu cuenta de Claude Code</label><input type="text" id="accountEmail" spellcheck="false" placeholder="nombre@empresa.com"><div class="hint" id="lhint"></div><div class="err" id="e-accountEmail"></div></div>
 <div class="full"><label for="key">Key</label><div class="keyrow"><input type="password" id="key" placeholder="omk_..." spellcheck="false"><button type="button" id="eye">Ver</button></div><div class="hint" id="khint"></div><div class="err" id="e-key"></div></div>
 <div class="full"><label for="url">URL de la API</label><input type="text" id="url" readonly tabindex="-1" style="opacity:.7;cursor:not-allowed"></div>
 <div class="full"><label for="intervalSeconds">Intervalo de sincronización (segundos)</label><input type="number" id="intervalSeconds" min="5" max="3600"><div class="hint">Entre 5 y 3600.</div><div class="err" id="e-intervalSeconds"></div></div>
@@ -224,8 +228,9 @@ h3{font-size:14px;margin:22px 0 6px}.mut{color:var(--mut)}[hidden]{display:none!
 <h2>Cuentas de Claude Code</h2><p class="sub">¿Usás Claude Code con más de una cuenta (trabajo, personal…)? Agregá cada una con su propia key y se ven separadas en <b>Mi consumo</b>. Se crea un comando <code>claude-&lt;nombre&gt;</code> que abre Claude Code con esa cuenta: no hace falta desloguearse.</p>
 <div id="acclist" class="mut"></div>
 <div class="grid" style="margin-top:12px">
-<div><label for="an">Nombre</label><input type="text" id="an" placeholder="personal" spellcheck="false"></div>
-<div><label for="ak">Key de esa cuenta</label><input type="password" id="ak" placeholder="omk_..." spellcheck="false"></div>
+<div><label for="an">Nombre</label><input type="text" id="an" placeholder="trabajo" spellcheck="false"></div>
+<div><label for="ae">Email de esa cuenta de Claude Code</label><input type="text" id="ae" placeholder="nombre@empresa.com" spellcheck="false"></div>
+<div class="full"><label for="ak">Key de esa cuenta (generada con ese email)</label><input type="password" id="ak" placeholder="omk_..." spellcheck="false"></div>
 </div>
 <div class="bar"><button type="button" id="aadd">Agregar cuenta</button><span id="amsg"></span></div>
 </section>
@@ -239,7 +244,7 @@ const $=id=>document.getElementById(id);
 const H={'x-octomate-ui':'1','content-type':'application/json'};
 const get=p=>fetch(p).then(r=>r.json());
 const post=(p,b)=>fetch(p,{method:'POST',headers:H,body:b?JSON.stringify(b):undefined}).then(r=>r.json());
-const FIELDS=['key','intervalSeconds','claudeDir','copilotDir'];
+const FIELDS=['accountEmail','key','intervalSeconds','claudeDir','copilotDir'];
 function mark(f,msg,ok){const i=$(f),e=$('e-'+f);if(!i||!e)return;e.textContent=msg||'';i.classList.toggle('bad',!!msg);i.classList.toggle('good',!msg&&!!ok)}
 async function checkPath(f){const v=$(f).value.trim();if(f==='copilotDir'&&!$('copilotEnabled').checked){mark(f,'');return}
  if(!v){mark(f,'Obligatorio');return}const r=await get('/api/check-path?p='+encodeURIComponent(v));mark(f,r.exists?'':'Esa carpeta no existe',r.exists)}
@@ -250,7 +255,7 @@ let S=null;
 async function load(fill){
  S=await get('/api/status');
  const pill=$('pill');pill.textContent=!S.hasKey?'Sin configurar':S.paused?'En pausa':'Activo';pill.className='pill '+(!S.hasKey?'off':S.paused?'off':'on');
- if(fill){$('url').value=S.url;$('intervalSeconds').value=S.intervalSeconds;$('claudeDir').value=S.claudeDir;$('copilotDir').value=S.copilotDir||'';
+ if(fill){$('url').value=S.url;$('accountEmail').value=S.accountEmail||'';$('lhint').textContent=S.loggedEmail?(S.accountEmail&&S.loggedEmail!==S.accountEmail?'⚠ Claude Code está logueado como '+S.loggedEmail+': no se envía nada hasta que coincida.':'Sesión actual de Claude Code: '+S.loggedEmail):'';$('intervalSeconds').value=S.intervalSeconds;$('claudeDir').value=S.claudeDir;$('copilotDir').value=S.copilotDir||'';
   $('copilotEnabled').checked=S.copilotEnabled;$('strictRedact').checked=S.strictRedact;$('cop').hidden=!S.copilotEnabled;
   $('khint').textContent=S.hasKey?'Key guardada ('+S.keyPreview+'). Dejá el campo vacío para conservarla o pegá otra para reemplazarla.':'';
   $('subt').hidden=S.hasKey;$('sb').textContent=S.hasKey?'Guardar cambios':'Guardar y conectar'}
@@ -276,7 +281,7 @@ document.querySelectorAll('[data-path]').forEach(i=>i.addEventListener('blur',()
 $('key').addEventListener('input',()=>{const v=$('key').value.trim();mark('key',v&&!v.startsWith('omk_')?'La key tiene que empezar con omk_':'')});
 $('intervalSeconds').addEventListener('input',()=>{const n=Number($('intervalSeconds').value);mark('intervalSeconds',Number.isInteger(n)&&n>=5&&n<=3600?'':'Un número entero entre 5 y 3600')});
 $('sf').onsubmit=async e=>{e.preventDefault();FIELDS.forEach(f=>mark(f,''));$('sb').disabled=true;$('msg').className='';$('msg').textContent='Validando…';
- let r;try{r=await post('/api/settings',{key:$('key').value,intervalSeconds:Number($('intervalSeconds').value),claudeDir:$('claudeDir').value,
+ let r;try{r=await post('/api/settings',{accountEmail:$('accountEmail').value,key:$('key').value,intervalSeconds:Number($('intervalSeconds').value),claudeDir:$('claudeDir').value,
   copilotEnabled:$('copilotEnabled').checked,strictRedact:$('strictRedact').checked,copilotDir:$('copilotDir').value})}catch(x){r={ok:false,errors:{},error:String(x)}}
  $('sb').disabled=false;
  if(!r.ok){Object.entries(r.errors||{}).forEach(([f,m])=>mark(f,m));$('msg').className='bad';$('msg').textContent='Revisá los campos marcados.';const b=document.querySelector('.bad');if(b)b.focus();return}
@@ -285,15 +290,15 @@ $('sf').onsubmit=async e=>{e.preventDefault();FIELDS.forEach(f=>mark(f,''));$('s
 async function accounts(){
  const l=await get('/api/accounts'),box=$('acclist');box.textContent='';
  const row=(t,b)=>{const d=document.createElement('div');d.style.cssText='display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)';const s=document.createElement('span');s.textContent=t;s.style.flex='1';d.append(s);if(b)d.append(b);box.append(d)};
- row('default · cuenta principal (~/.claude) — la key de arriba');
+ row('default · '+(S&&S.accountEmail||'sin email')+' · cuenta principal (~/.claude)');
  for(const a of l){const b=document.createElement('button');b.textContent='Quitar';b.onclick=async()=>{if(!confirm('¿Quitar la cuenta "'+a.name+'" del recolector? (no borra su carpeta de Claude Code)'))return;await post('/api/accounts/remove',{name:a.name});accounts()};
-  row(a.name+' · '+a.keyPreview+' · abrí Claude Code con: '+a.command,b)}}
+  row(a.name+' · '+a.email+' · '+a.keyPreview+' · abrí Claude Code con: '+a.command,b)}}
 $('aadd').onclick=async()=>{const m=$('amsg');m.className='';m.textContent='Validando…';$('aadd').disabled=true;
- let r;try{r=await post('/api/accounts/add',{name:$('an').value,key:$('ak').value})}catch(x){r={ok:false,error:String(x)}}
+ let r;try{r=await post('/api/accounts/add',{name:$('an').value,email:$('ae').value,key:$('ak').value})}catch(x){r={ok:false,error:String(x)}}
  $('aadd').disabled=false;
  if(!r.ok){m.className='bad';m.textContent=r.error;return}
  m.className='ok';m.textContent='✔ Agregada. Abrí Claude Code con "'+r.commandName+'" y hacé /login con esa cuenta (una sola vez).'+(r.onPath?'':' Agregá '+r.command.replace(/[\\/][^\\/]*$/,'')+' a tu PATH.');
- $('an').value='';$('ak').value='';accounts()};
+ $('an').value='';$('ae').value='';$('ak').value='';accounts()};
 $('bp').onclick=async()=>{await post('/api/pause?value='+(S.paused?0:1));load(false)};
 $('bs').onclick=()=>{load(false);live()};load(true);live();accounts();setInterval(()=>{load(false);live()},3000);
 </script></body></html>`

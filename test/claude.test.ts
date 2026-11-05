@@ -130,7 +130,7 @@ test('syncOnce: la primera ejecución no envía histórico, solo lo nuevo; si fa
     if (fail) return { status: 500, json: {} }
     got.push(...b.events.map((e: any) => e.external_id)); return { status: 200, json: { inserted: b.events.length, duplicates: 0 } }
   })
-  const cfg = { url: s.url, key: 'omk_x', metadataOnly: false, strictRedact: true, intervalSeconds: 30, claudeDir: dir, copilotDir: null }
+  const cfg = { url: s.url, key: 'omk_x', metadataOnly: false, strictRedact: true, accountEmail: '', intervalSeconds: 30, claudeDir: dir, copilotDir: null }
   const sp = path.join(tmp(), 'state.json')
   await syncOnce(cfg, sp, { settleMs: 0 })
   fs.appendFileSync(f, asst('nuevo', '2026-11-05T00:00:00Z', [{ type: 'text', text: 'n' }]))

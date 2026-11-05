@@ -15,11 +15,12 @@ async function post(url: string, key: string, events: UsageEvent[]): Promise<Res
   })
 }
 
-export async function ping(url: string, key: string): Promise<{ ok: boolean; status: number; label?: string; error?: string }> {
+export async function ping(url: string, key: string): Promise<{ ok: boolean; status: number; label?: string; accountEmail?: string; error?: string }> {
   try {
     const r = await fetch(`${url}/v1/ingest/ping`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) })
     if (!r.ok) return { ok: false, status: r.status, error: (await r.json().catch(() => ({}))).detail }
-    return { ok: true, status: r.status, label: (await r.json()).label }
+    const j = await r.json()
+    return { ok: true, status: r.status, label: j.label, accountEmail: (j.account_email ?? '') || undefined }
   } catch (e) {
     return { ok: false, status: 0, error: (e as Error).message }
   }
