@@ -1,0 +1,20 @@
+{
+  "name": "octomatelabs-data",
+  "version": "0.1.0",
+  "description": "Recolector de uso de Claude Code / Codex para OctoMateLabs",
+  "type": "module",
+  "bin": { "octomate-data": "dist/cli.mjs" },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}

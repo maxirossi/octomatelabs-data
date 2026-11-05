@@ -1,0 +1,29 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run typecheck && npm test
+      - name: Binarios (cross-compile)
+        run: |
+          mkdir -p bin
+          for t in linux-x64 linux-arm64 darwin-x64 darwin-arm64 windows-x64; do
+            ext=""; [ "$t" = "windows-x64" ] && ext=".exe"
+            bun build src/cli.ts --compile --target=bun-$t --outfile bin/octomate-data-$t$ext
+          done
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/*
+            install.sh
+            install.ps1
