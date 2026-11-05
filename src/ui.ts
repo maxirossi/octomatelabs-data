@@ -241,16 +241,18 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 Inter,system-ui
 .chat{display:flex;flex-direction:column;height:calc(100vh - 70px);min-height:420px}
 .chat .top{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 select{font:inherit;background:var(--inp);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:100%}
-#msgs{flex:1;overflow:auto;border:1px solid var(--bd);border-radius:14px;background:var(--card);padding:14px;display:flex;flex-direction:column;gap:10px}
-.m{max-width:85%;padding:9px 13px;border-radius:12px;white-space:pre-wrap;word-break:break-word}
-.m.user{align-self:flex-end;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff}
+#msgs{flex:1;overflow:auto;border:1px solid var(--bd);border-radius:14px;background:radial-gradient(circle at 20% 10%,rgba(168,85,247,.06),transparent 50%),#0d0b17;padding:14px 18px;display:flex;flex-direction:column;gap:3px}
+.m{max-width:75%;padding:7px 11px 6px;border-radius:10px;white-space:pre-wrap;word-break:break-word;line-height:1.4;box-shadow:0 1px 1px rgba(0,0,0,.3);margin-top:6px;position:relative}
+.m.same{margin-top:0}
+.m.user.first{border-top-right-radius:2px}.m.assistant.first{border-top-left-radius:2px}
+.m.user{align-self:flex-end;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
 .m.assistant{align-self:flex-start;background:var(--inp);border:1px solid var(--bd)}
 .m.error{align-self:flex-start;color:var(--err);border:1px solid var(--err);background:transparent}
-.m small{display:block;margin-top:6px;opacity:.65;font-size:11px}
+.m small{display:block;margin-top:3px;opacity:.6;font-size:10.5px;text-align:right;white-space:normal}
 .info{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .chip{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:5px 11px;font-size:12px;color:var(--mut)}.chip b{color:var(--fg);font-size:13px}
 .ctx{height:5px;border-radius:3px;background:var(--bd);margin-top:4px;overflow:hidden;min-width:90px}.ctx i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ac2))}.ctx i.hot{background:var(--err)}
-.m.tool{align-self:flex-start;font-size:12px;color:var(--mut);padding:4px 10px;border:1px dashed var(--bd);background:transparent}
+.m.tool{align-self:center;font-size:11px;color:var(--mut);padding:2px 10px;border-radius:99px;background:rgba(255,255,255,.05);box-shadow:none;margin-top:4px}
 .compose{display:flex;gap:8px;margin-top:10px;align-items:flex-end}
 textarea{flex:1;font:inherit;background:var(--inp);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;resize:vertical;min-height:44px;max-height:200px}
 textarea:focus{outline:2px solid var(--ac);outline-offset:-1px;border-color:transparent}
@@ -455,7 +457,7 @@ function convList(){const sel=$('cconv');sel.textContent='';
  SESS.forEach(x=>{const o=document.createElement('option');o.value='sess:'+x.id;o.textContent=new Date(x.lastAt).toLocaleTimeString()+' · '+(x.project||'-').split(/[\\/]/).pop()+' · '+x.turns+' turnos';g2.append(o)});
  if(CHATS.length)sel.append(g1);if(SESS.length)sel.append(g2);sel.value=CUR}
 function chip(label,val,extra){const d=document.createElement('div');d.className='chip';const b=document.createElement('b');b.textContent=val;d.append(label+' ',b);if(extra)d.append(extra);$('cinfo').append(d)}
-function bubble(cls,text,meta){const d=document.createElement('div');d.className='m '+cls;d.textContent=text;if(meta){const s=document.createElement('small');s.textContent=meta;d.append(s)}
+let LASTCLS='';function bubble(cls,text,meta){const d=document.createElement('div');d.className='m '+cls+(cls===LASTCLS?' same':' first');LASTCLS=cls;d.textContent=text;if(meta){const s=document.createElement('small');s.textContent=meta;d.append(s)}
  $('cempty').hidden=true;$('msgs').append(d);$('msgs').scrollTop=1e9;return d}
 function infoChat(c){$('cinfo').textContent='';
  const ok=c.msgs.filter(m=>m.role!=='error'),as=ok.filter(m=>m.role==='assistant');
@@ -471,13 +473,13 @@ function infoSess(x){$('cinfo').textContent='';
  if(x.thinking)chip('Thinking',fmt(x.thinking));chip('Modelo',x.model||'-');chip('Proyecto',(x.project||'-').split(/[\\/]/).pop());
  if(x.tools.length)chip('Herramientas',x.tools.length+': '+x.tools.slice(0,6).join(', '))}
 async function render(){
- $('msgs').querySelectorAll('.m').forEach(m=>m.remove());$('cempty').hidden=false;
+ $('msgs').querySelectorAll('.m').forEach(m=>m.remove());LASTCLS='';$('cempty').hidden=false;
  const ro=CUR&&CUR.startsWith('sess:');$('compose').hidden=ro;$('cdel').hidden=ro;$('cprov').hidden=ro;$('cmodel').hidden=ro;
  if(ro){const x=SESS.find(s=>'sess:'+s.id===CUR);if(!x)return;infoSess(x);
   const turns=await get('/api/session?id='+encodeURIComponent(x.id));
-  for(const t of turns){if(t.request)bubble('user',t.request,(t.agent?'subagente '+t.agent+' · ':'')+new Date(t.at).toLocaleTimeString());
+  for(const t of turns){if(t.request&&!/^\\s*(\\[Image:[^\\]]*\\]\\s*)*(↳ )?\\[[A-Za-z_]+:/.test(t.request))bubble('user',t.request,(t.agent?'subagente '+t.agent+' · ':'')+new Date(t.at).toLocaleTimeString());
    if(t.tools.length)bubble('tool','🔧 '+t.tools.join(', '));
-   bubble('assistant',t.response||'(sin texto)',(t.model||'-')+' · in '+t.input+' · out '+t.output+' · cache '+t.cacheRead)}
+   if(t.response&&t.response.trim())bubble('assistant',t.response,(t.model||'-')+' · in '+t.input+' · out '+t.output+' · cache '+t.cacheRead)}
   return}
  const c=curChat();if(!c)return;
  if(c.provider&&PROV.some(p=>p.id===c.provider)){$('cprov').value=c.provider;await models();if(c.model)$('cmodel').value=c.model}
