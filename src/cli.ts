@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import { execFile } from 'node:child_process'
-import { addProfile, checkKeyEmail, mismatchReason, removeProfile, validEmail } from './accounts.ts'
+import { addProfile, mismatchReason, removeProfile } from './accounts.ts'
 import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, loadProfiles, requireKey, syncTargets } from './config.ts'
 import { appendSent } from './sentlog.ts'
 import { startUi } from './ui.ts'
@@ -14,7 +14,7 @@ import { syncOnce } from './sync.ts'
 const HELP = `octomate-data — envía tu uso de Claude Code a OctoMateLabs
 
 Uso:
-  octomate-data init                 Pide la URL y la key, prueba la conexión y las guarda
+  octomate-data init                 Pide la key, prueba la conexión y la guarda
   octomate-data run                  Corre en primer plano y sincroniza cada N segundos
   octomate-data once                 Un solo ciclo de sincronización
   octomate-data backfill [--days N]  Importa el histórico (default 30 días)
@@ -36,14 +36,13 @@ async function init() {
   const cfg = loadConfig()
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   try {
-    const url = (await rl.question(`URL de la API [${cfg.url}]: `)).trim() || cfg.url
-    const email = ((await rl.question(`Email de tu cuenta de Claude Code [${cfg.accountEmail}]: `)).trim() || cfg.accountEmail).toLowerCase()
-    if (!validEmail(email)) throw new Error('Email inválido')
-    const key = (await rl.question('Key (omk_..., generada para ese email en "Mi consumo"): ')).trim() || cfg.key
-    const r = await checkKeyEmail(url.replace(/\/+$/, ''), key, email)
+    const key = (await rl.question('Key (omk_..., la generás en "Mi consumo"): ')).trim() || cfg.key
+    const r = await ping(cfg.url, key)
+    if (!r.ok) throw new Error(`No se pudo validar la key (${r.status || 'sin conexión'}${r.error ? ': ' + r.error : ''})`)
+    if (!r.accountEmail) throw new Error('Esa key no tiene una cuenta de Claude asignada: generá una key nueva en "Mi consumo"')
     fs.mkdirSync(HOME_DIR, { recursive: true })
-    fs.writeFileSync(ENV_PATH, `OCTOMATELABS_URL=${url}\nOCTOMATELABS_KEY=${key}\nACCOUNT_EMAIL=${email}\n`, { mode: 0o600 })
-    console.log(`✔ Conectado${r.label ? ` (key "${r.label}")` : ''} como ${email}. Guardado en ${ENV_PATH}`)
+    fs.writeFileSync(ENV_PATH, `OCTOMATELABS_URL=${cfg.url}\nOCTOMATELABS_KEY=${key}\nACCOUNT_EMAIL=${r.accountEmail}\n`, { mode: 0o600 })
+    console.log(`✔ Conectado${r.label ? ` (key "${r.label}")` : ''} como ${r.accountEmail}. Guardado en ${ENV_PATH}`)
     console.log('Siguiente paso: "octomate-data install-service" para que corra solo, o "octomate-data run".')
   } finally { rl.close() }
 }

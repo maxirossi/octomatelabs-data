@@ -8,7 +8,9 @@ case "$arch" in x86_64|amd64) arch=x64;; arm64|aarch64) arch=arm64;; *) echo "Ar
 dest="${OCTOMATE_BIN_DIR:-$HOME/.local/bin}"; mkdir -p "$dest"
 url="https://github.com/$REPO/releases/latest/download/octomate-data-$os-$arch"
 echo "Descargando $url"
-curl -fsSL "$url" -o "$dest/octomate-data"; chmod +x "$dest/octomate-data"
+# Descarga a un temporal y reemplaza con mv: pisa una instalación previa aunque esté corriendo (evita "Text file busy")
+tmp="$dest/.octomate-data.$$"; trap 'rm -f "$tmp"' EXIT
+curl -fsSL "$url" -o "$tmp"; chmod +x "$tmp"; mv -f "$tmp" "$dest/octomate-data"
 echo "Instalado en $dest/octomate-data"
 case ":$PATH:" in *":$dest:"*) ;; *) echo "Agregá $dest a tu PATH.";; esac
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ "$os" = darwin ]; then
