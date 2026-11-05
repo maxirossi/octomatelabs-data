@@ -35,6 +35,7 @@ npx octomatelabs-data init
 ## Qué se envía y qué no
 
 - **Primera ejecución:** el histórico existente *no* se envía; solo lo nuevo. Para importarlo: `backfill`.
+- **Cifrar información sensible** (checkbox del panel, `REDACT_STRICT`, activado por defecto): además de lo de abajo, corta cualquier valor que parezca una clave (`password: …`, `--token …`, `?api_key=…`, cadenas largas aleatorias) y lo reemplaza por `[REDACTED]`. Es un enmascarado, no un cifrado: el dato original no sale de tu máquina. Desactivarlo deja solo la redacción básica.
 - Se redactan localmente secretos (claves `sk-`, JWT, `KEY=…`, contraseñas en URLs, claves PEM…) y el server vuelve a redactar.
 - `METADATA_ONLY=true` envía solo métricas, sin prompts ni responses.
 - El envío es idempotente (por id de mensaje) y con reintentos: si no hay red, no se pierde nada y no se duplica.

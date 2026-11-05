@@ -130,7 +130,7 @@ test('syncOnce: la primera ejecución no envía histórico, solo lo nuevo; si fa
     if (fail) return { status: 500, json: {} }
     got.push(...b.events.map((e: any) => e.external_id)); return { status: 200, json: { inserted: b.events.length, duplicates: 0 } }
   })
-  const cfg = { url: s.url, key: 'omk_x', metadataOnly: false, intervalSeconds: 30, claudeDir: dir, copilotDir: null }
+  const cfg = { url: s.url, key: 'omk_x', metadataOnly: false, strictRedact: true, intervalSeconds: 30, claudeDir: dir, copilotDir: null }
   const sp = path.join(tmp(), 'state.json')
   await syncOnce(cfg, sp, { settleMs: 0 })
   fs.appendFileSync(f, asst('nuevo', '2026-11-05T00:00:00Z', [{ type: 'text', text: 'n' }]))
@@ -196,4 +196,16 @@ test('copilot: since descarta lo anterior; elapsedMs absurdo queda en null; meta
 test('rebuildSession tolera líneas rotas', () => {
   const s = rebuildSession(line({ kind: 0, v: { requests: [] } }) + '{roto\n' + line({ kind: 2, k: ['requests'], v: [{ requestId: 'a' }] }))
   assert.equal(s.requests.length, 1)
+})
+
+test('redactStrict corta claves sin formato conocido pero respeta texto normal', async () => {
+  const { redactStrict } = await import('../src/sanitize.ts')
+  const t = redactStrict([
+    'mi password: Sup3rS3cr3to!', 'export stripeKey="abc123XYZ789"', 'curl --token abcDEF123456 https://x.io/a?api_key=zzTop1234&b=1',
+    'cadena Zq81vK0mPfa93LxT7nRb2YdE5hWc4uGs aleatoria', 'commit 3f2a9c1d4e5b6a7f8091a2b3c4d5e6f708192a3b ok', 'sk_live_51HabcdefGhijk', 'const total = items.length + 1',
+  ].join('\n'))!
+  for (const secreto of ['Sup3rS3cr3to', 'abc123XYZ789', 'abcDEF123456', 'zzTop1234', 'Zq81vK0mPfa93LxT7nRb2YdE5hWc4uGs', 'sk_live_51Habcdef']) assert.ok(!t.includes(secreto), `se filtró ${secreto}\n${t}`)
+  assert.ok(t.includes('3f2a9c1d4e5b6a7f8091a2b3c4d5e6f708192a3b'), 'un SHA de git no es secreto')
+  assert.ok(t.includes('const total = items.length + 1'))
+  assert.ok(t.includes('b=1'))
 })

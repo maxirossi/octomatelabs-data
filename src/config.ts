@@ -12,6 +12,8 @@ export interface Config {
   url: string
   key: string
   metadataOnly: boolean
+  /** "Cifrar información sensible": redacción estricta de claves/tokens/contraseñas en prompts y responses (default: activado). */
+  strictRedact: boolean
   intervalSeconds: number
   claudeDir: string
   /** null = Copilot desactivado (COPILOT_ENABLED=false). */
@@ -55,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     url,
     key,
     metadataOnly: /^(1|true|yes)$/i.test(get('METADATA_ONLY') ?? ''),
+    strictRedact: !/^(0|false|no)$/i.test(get('REDACT_STRICT') ?? ''),
     intervalSeconds: Math.max(5, Number(get('SYNC_INTERVAL_SECONDS')) || 30),
     claudeDir: expand(get('CLAUDE_PROJECTS_DIR') ?? '~/.claude/projects'),
     copilotDir: /^(0|false|no)$/i.test(get('COPILOT_ENABLED') ?? '') ? null : expand(get('COPILOT_STORAGE_DIR') ?? defaultCopilotDir()),

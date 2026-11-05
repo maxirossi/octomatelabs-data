@@ -47,6 +47,8 @@ async function run() {
   let cfg = loadConfig()
   requireKey(cfg)
   log(`Sincronizando ${cfg.claudeDir}${cfg.copilotDir ? ' + ' + cfg.copilotDir : ''} → ${cfg.url} cada ${cfg.intervalSeconds}s${cfg.metadataOnly ? ' (solo métricas)' : ''}`)
+  // Panel local siempre disponible mientras el servicio corre (http://localhost:4567)
+  startUi(4567, { fixedPort: true }).then((r) => log(`Panel en http://localhost:${r.port}`)).catch((e) => log(`panel no disponible: ${(e as Error).message}`))
   let stop = false
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { stop = true; process.exit(0) })
   while (!stop) {
@@ -108,7 +110,7 @@ async function main() {
     }
     case 'setup': {
       // Asistente visual: abre el navegador, pide la key, la valida, instala el servicio y termina.
-      const r = await startUi(4567, { setup: { onDone: () => { console.log('Listo. octomate-data quedó corriendo en segundo plano.'); process.exit(0) } } })
+      const r = await startUi(4590, { setup: { onDone: () => { console.log('Listo. octomate-data quedó corriendo en segundo plano.'); process.exit(0) } } })
       const u = `http://localhost:${r.port}`
       console.log(`Abriendo ${u} para configurar la key… (si no se abre solo, copiá ese link en el navegador)`)
       openBrowser(u); return

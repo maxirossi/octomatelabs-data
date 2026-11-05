@@ -3,6 +3,7 @@ import { discoverFiles, readFile } from './claude.ts'
 import type { Config } from './config.ts'
 import { discoverCopilotFiles, readCopilotFile } from './copilot.ts'
 import type { UsageEvent } from './types.ts'
+import { redactStrict } from './sanitize.ts'
 import { sendAll } from './sender.ts'
 import { loadState, saveState } from './state.ts'
 
@@ -31,6 +32,7 @@ export async function syncOnce(cfg: Config, statePath: string, opts: { since?: D
     saveState(statePath, state)
   }
   const enqueue = async (events: UsageEvent[], commit: () => void) => {
+    if (cfg.strictRedact) events = events.map((e) => ({ ...e, request_text: redactStrict(e.request_text), response_text: redactStrict(e.response_text) }))
     pending.events.push(...events); pending.commits.push(commit)
     if (pending.events.length >= BATCH) await flush()
   }
