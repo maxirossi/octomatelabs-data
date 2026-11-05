@@ -1,6 +1,6 @@
 {
   "name": "octomatelabs-data",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Recolector de uso de Claude Code / Codex para OctoMateLabs",
   "type": "module",
   "bin": { "octomate-data": "dist/cli.mjs" },
