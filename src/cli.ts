@@ -1,7 +1,9 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import readline from 'node:readline/promises'
 import { execFile } from 'node:child_process'
-import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, requireKey } from './config.ts'
+import { addProfile, removeProfile } from './accounts.ts'
+import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, loadProfiles, requireKey, syncTargets } from './config.ts'
 import { appendSent } from './sentlog.ts'
 import { startUi } from './ui.ts'
 import { AuthError, ping } from './sender.ts'
@@ -19,6 +21,8 @@ Uso:
   octomate-data preview [--days N]   Muestra el JSON exacto que se enviaría (ya sanitizado), sin enviar nada
   octomate-data setup                Asistente visual: abre el navegador, pide la key e instala el servicio
   octomate-data ui [--port N]        Panel local (127.0.0.1:4567): estado, pausa, modo y lo enviado
+  octomate-data account add <nombre> <key>   Agrega otra cuenta de Claude Code (crea el comando claude-<nombre>)
+  octomate-data account list | remove <nombre>
   octomate-data status               Muestra configuración y estado
   octomate-data ping                 Prueba la conexión con la key
   octomate-data install-service      Lo deja corriendo en segundo plano al iniciar sesión
@@ -55,8 +59,14 @@ async function run() {
     try {
       cfg = loadConfig() // permite cambiar la config sin reiniciar
       if (fs.existsSync(PAUSE_PATH)) { await new Promise((r) => setTimeout(r, cfg.intervalSeconds * 1000)); continue }
-      const s = await syncOnce(cfg, STATE_PATH, { onEvents: (e, sent) => { if (sent) appendSent(e) } })
-      if (s.events) log(`${s.inserted} nuevos, ${s.duplicates} duplicados${s.dropped ? `, ${s.dropped} descartados` : ''}`)
+      for (const t of syncTargets(cfg)) { // un error en una cuenta no frena a las demás
+        try {
+          const s = await syncOnce(t.cfg, t.statePath, { onEvents: (e, sent) => { if (sent) appendSent(e) } })
+          if (s.events) log(`[${t.name}] ${s.inserted} nuevos, ${s.duplicates} duplicados${s.dropped ? `, ${s.dropped} descartados` : ''}`)
+        } catch (e) {
+          log(`[${t.name}] error: ${(e as Error).message}${e instanceof AuthError ? ' (se reintenta igual)' : ''}`)
+        }
+      }
     } catch (e) {
       log(`error: ${(e as Error).message}${e instanceof AuthError ? ' (se reintenta igual)' : ''}`)
     }
@@ -77,7 +87,7 @@ async function main() {
     case 'run': return run()
     case 'once': {
       const cfg = loadConfig(); requireKey(cfg)
-      console.log(await syncOnce(cfg, STATE_PATH, { settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
+      for (const t of syncTargets(cfg)) console.log(t.name, await syncOnce(t.cfg, t.statePath, { settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
     }
     case 'backfill': {
       const cfg = loadConfig(); requireKey(cfg)
@@ -86,7 +96,10 @@ async function main() {
       if (!Number.isFinite(days) || days <= 0) throw new Error('--days debe ser un número positivo')
       const since = new Date(Date.now() - days * 86_400_000)
       console.log(`Importando los últimos ${days} días…`)
-      console.log(await syncOnce(cfg, STATE_PATH, { backfill: true, since, settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
+      const only = args.indexOf('--account') >= 0 ? args[args.indexOf('--account') + 1] : null
+      const targets = syncTargets(cfg).filter((t) => !only || t.name === only)
+      if (!targets.length) throw new Error(only ? `No existe la cuenta "${only}"` : 'No hay cuentas configuradas')
+      for (const t of targets) console.log(t.name, await syncOnce(t.cfg, t.statePath, { backfill: true, since, settleMs: 0, onEvents: (e, sent) => { if (sent) appendSent(e) } })); return
     }
     case 'preview': {
       const cfg = loadConfig()
@@ -94,12 +107,16 @@ async function main() {
       const days = i >= 0 ? Number(args[i + 1]) : undefined
       if (days !== undefined && (!Number.isFinite(days) || days <= 0)) throw new Error('--days debe ser un número positivo')
       const events: unknown[] = []
-      const stats = await syncOnce(cfg, STATE_PATH, {
-        dryRun: true, settleMs: 0, onEvents: (e) => events.push(...e),
-        ...(days ? { backfill: true, since: new Date(Date.now() - days * 86_400_000) } : {}),
-      })
+      let total = 0
+      for (const t of syncTargets(cfg)) {
+        const stats = await syncOnce(t.cfg, t.statePath, {
+          dryRun: true, settleMs: 0, onEvents: (e) => events.push(...e),
+          ...(days ? { backfill: true, since: new Date(Date.now() - days * 86_400_000) } : {}),
+        })
+        total += stats.events
+      }
       for (const e of events) console.log(JSON.stringify(e, null, 2))
-      console.error(`${stats.events} evento(s) se enviarían${cfg.metadataOnly ? ' (solo métricas)' : ''}. No se envió nada.`); return
+      console.error(`${total} evento(s) se enviarían${cfg.metadataOnly ? ' (solo métricas)' : ''}. No se envió nada.`); return
     }
     case 'ui': {
       const i = args.indexOf('--port')
@@ -115,10 +132,28 @@ async function main() {
       console.log(`Abriendo ${u} para configurar la key… (si no se abre solo, copiá ese link en el navegador)`)
       openBrowser(u); return
     }
+    case 'account': {
+      const [sub, name, key] = args
+      if (sub === 'add') {
+        if (!name || !key) throw new Error('Uso: octomate-data account add <nombre> <key omk_...>')
+        const r = await addProfile(name, key)
+        console.log(`✔ Cuenta "${r.profile.name}" agregada${r.label ? ` (key "${r.label}")` : ''}.`)
+        console.log(`  Para usarla, abrí Claude Code con:  ${path.basename(r.command)}   (la primera vez hacé /login con esa cuenta)`)
+        if (!r.onPath) console.log(`  Agregá ${path.dirname(r.command)} a tu PATH para que el comando funcione.`)
+        console.log('  El servicio la toma en el próximo ciclo (≤ 30 s).'); return
+      }
+      if (sub === 'remove') { if (!name) throw new Error('Uso: octomate-data account remove <nombre>'); removeProfile(name); console.log(`✔ Cuenta "${name}" quitada (la carpeta de Claude Code no se borra).`); return }
+      if (sub === 'list' || !sub) {
+        console.log('default  →  ~/.claude (cuenta principal, config en el .env)')
+        for (const p of loadProfiles()) console.log(`${p.name}  →  ${p.configDir}  (comando: claude-${p.name})`)
+        return
+      }
+      throw new Error('Uso: octomate-data account add|list|remove')
+    }
     case 'status': {
       const cfg = loadConfig(); const st = loadState(STATE_PATH)
       console.log({ url: cfg.url, key: cfg.key ? cfg.key.slice(0, 12) + '…' : '(falta)', metadataOnly: cfg.metadataOnly,
-        claudeDir: cfg.claudeDir, copilotDir: cfg.copilotDir, archivosSeguidos: Object.keys(st.files).length, inicializado: st.initializedAt ?? null }); return
+        claudeDir: cfg.claudeDir, cuentasExtra: loadProfiles().map((p) => p.name), copilotDir: cfg.copilotDir, archivosSeguidos: Object.keys(st.files).length, inicializado: st.initializedAt ?? null }); return
     }
     case 'ping': {
       const cfg = loadConfig(); requireKey(cfg)

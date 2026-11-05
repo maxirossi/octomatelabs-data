@@ -69,3 +69,48 @@ export function requireKey(c: Config): void {
     throw new Error(`Falta OCTOMATELABS_KEY (formato omk_...). Corré "octomate-data init" o editá ${ENV_PATH}`)
   }
 }
+
+// ── Cuentas adicionales (varias cuentas de Claude Code en la misma máquina) ─────────────────────
+// La cuenta "default" sigue siendo la del .env (~/.claude). Las demás viven en profiles.json: cada una
+// tiene su key (así se ven separadas en el sitio) y su propia carpeta de configuración de Claude Code
+// (CLAUDE_CONFIG_DIR), que es lo que permite distinguir qué turno es de qué cuenta.
+export const PROFILES_PATH = path.join(HOME_DIR, 'profiles.json')
+
+export interface Profile {
+  name: string
+  key: string
+  /** Carpeta de configuración de Claude Code de esta cuenta (los transcripts están en <dir>/projects). */
+  configDir: string
+}
+
+export const validProfileName = (n: string) => /^[a-z0-9][a-z0-9_-]{0,30}$/i.test(n) && n.toLowerCase() !== 'default'
+
+export function loadProfiles(file = PROFILES_PATH): Profile[] {
+  try {
+    const arr = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!Array.isArray(arr)) return []
+    return arr.filter((p) => p && validProfileName(String(p.name)) && String(p.key).startsWith('omk_') && p.configDir)
+      .map((p) => ({ name: String(p.name), key: String(p.key), configDir: expand(String(p.configDir)) }))
+  } catch { return [] }
+}
+
+export function saveProfiles(profiles: Profile[], file = PROFILES_PATH): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(profiles, null, 2) + '\n', { mode: 0o600 })
+  try { fs.chmodSync(file, 0o600) } catch { /* Windows */ }
+}
+
+export const statePathFor = (name: string) => (name === 'default' ? STATE_PATH : path.join(HOME_DIR, `state-${name}.json`))
+
+export interface SyncTarget { name: string; cfg: Config; statePath: string }
+
+/** Cuenta por defecto + cuentas extra. Copilot (VS Code) no es por cuenta de Claude: solo va con la default. */
+export function syncTargets(base: Config = loadConfig(), profiles: Profile[] = loadProfiles()): SyncTarget[] {
+  const targets: SyncTarget[] = []
+  if (base.key) targets.push({ name: 'default', cfg: base, statePath: STATE_PATH })
+  for (const p of profiles) {
+    targets.push({ name: p.name, statePath: statePathFor(p.name),
+      cfg: { ...base, key: p.key, claudeDir: path.join(p.configDir, 'projects'), copilotDir: null } })
+  }
+  return targets
+}

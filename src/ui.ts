@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import http from 'node:http'
-import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig } from './config.ts'
+import { addProfile, launcherPath, removeProfile } from './accounts.ts'
+import { ENV_PATH, HOME_DIR, PAUSE_PATH, STATE_PATH, loadConfig, loadProfiles, syncTargets } from './config.ts'
 import { LOGO_DATA_URI } from './logo.ts'
 import { ping } from './sender.ts'
 import { tailSent } from './sentlog.ts'
@@ -74,9 +75,8 @@ export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: tr
 }
 
 async function preview(): Promise<{ count: number; events: UsageEvent[] }> {
-  const cfg = loadConfig()
   const events: UsageEvent[] = []
-  await syncOnce(cfg, STATE_PATH, { dryRun: true, settleMs: 0, onEvents: (e) => events.push(...e) })
+  for (const t of syncTargets()) await syncOnce(t.cfg, t.statePath, { dryRun: true, settleMs: 0, onEvents: (e) => events.push(...e) })
   return { count: events.length, events: events.slice(-100).reverse() }
 }
 
@@ -125,6 +125,9 @@ function createUiServer(opts: UiOptions): http.Server {
       if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, status())
       if (req.method === 'GET' && url.pathname === '/api/sent') return json(res, 200, tailSent(100))
       if (req.method === 'GET' && url.pathname === '/api/preview') return json(res, 200, await preview())
+      if (req.method === 'GET' && url.pathname === '/api/accounts') {
+        return json(res, 200, loadProfiles().map((p) => ({ name: p.name, keyPreview: p.key.slice(0, 12) + '…', configDir: p.configDir, command: launcherPath(p.name).split(/[\\/]/).pop() })))
+      }
       if (req.method === 'GET' && url.pathname === '/api/check-path') {
         const p = expandHome(url.searchParams.get('p') ?? '')
         return json(res, 200, { exists: !!p && isDir(p) })
@@ -134,6 +137,16 @@ function createUiServer(opts: UiOptions): http.Server {
         if (url.pathname === '/api/pause') {
           if (url.searchParams.get('value') === '1') fs.writeFileSync(PAUSE_PATH, new Date().toISOString()); else fs.rmSync(PAUSE_PATH, { force: true })
           return json(res, 200, status())
+        }
+        if (url.pathname === '/api/accounts/add') {
+          const b = await readBody(req)
+          try {
+            const r = await addProfile(String(b.name ?? ''), String(b.key ?? ''))
+            return json(res, 200, { ok: true, command: launcherPath(r.profile.name), commandName: launcherPath(r.profile.name).split(/[\\/]/).pop(), label: r.label, onPath: r.onPath })
+          } catch (e) { return json(res, 200, { ok: false, error: (e as Error).message }) }
+        }
+        if (url.pathname === '/api/accounts/remove') {
+          try { removeProfile(String((await readBody(req)).name ?? '')); return json(res, 200, { ok: true }) } catch (e) { return json(res, 200, { ok: false, error: (e as Error).message }) }
         }
         if (url.pathname === '/api/settings') {
           const r = await saveSettings(await readBody(req))
@@ -181,7 +194,7 @@ button:hover{border-color:var(--ac)}
 button.primary{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;border:0;font-weight:600;padding:10px 20px}
 button.primary:disabled{opacity:.6;cursor:wait}
 .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
-#msg{font-size:13px}#msg.ok{color:var(--ok)}#msg.bad{color:var(--err)}
+#msg,#amsg{font-size:13px}#msg.ok,#amsg.ok{color:var(--ok)}#msg.bad,#amsg.bad{color:var(--err)}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
 details.ev{border:1px solid var(--bd);border-radius:10px;padding:8px 12px;margin:6px 0;background:var(--card)}
 details.ev summary{cursor:pointer;font-size:13px}
@@ -206,6 +219,16 @@ h3{font-size:14px;margin:22px 0 6px}.mut{color:var(--mut)}[hidden]{display:none!
 </div>
 <div class="bar"><button class="primary" id="sb" type="submit">Guardar y conectar</button><span id="msg"></span></div>
 </form>
+
+<section class="card" id="acc">
+<h2>Cuentas de Claude Code</h2><p class="sub">¿Usás Claude Code con más de una cuenta (trabajo, personal…)? Agregá cada una con su propia key y se ven separadas en <b>Mi consumo</b>. Se crea un comando <code>claude-&lt;nombre&gt;</code> que abre Claude Code con esa cuenta: no hace falta desloguearse.</p>
+<div id="acclist" class="mut"></div>
+<div class="grid" style="margin-top:12px">
+<div><label for="an">Nombre</label><input type="text" id="an" placeholder="personal" spellcheck="false"></div>
+<div><label for="ak">Key de esa cuenta</label><input type="password" id="ak" placeholder="omk_..." spellcheck="false"></div>
+</div>
+<div class="bar"><button type="button" id="aadd">Agregar cuenta</button><span id="amsg"></span></div>
+</section>
 
 <div class="actions"><button id="bp"></button><button id="bs">Actualizar</button></div>
 <div class="stats"><div><b id="n-total">0</b><span>enviados (últimos 100)</span></div><div><b id="n-last">-</b><span>último envío</span></div><div><b id="n-tok">0</b><span>tokens out (visibles)</span></div></div>
@@ -259,6 +282,18 @@ $('sf').onsubmit=async e=>{e.preventDefault();FIELDS.forEach(f=>mark(f,''));$('s
  if(!r.ok){Object.entries(r.errors||{}).forEach(([f,m])=>mark(f,m));$('msg').className='bad';$('msg').textContent='Revisá los campos marcados.';const b=document.querySelector('.bad');if(b)b.focus();return}
  $('msg').className='ok';$('msg').textContent='✔ Guardado'+(r.label?' · key "'+r.label+'"':'')+(r.setup?(r.serviceError?' · Servicio: '+r.serviceError:' · Quedó corriendo en segundo plano; en unos segundos te llevo al panel en vivo (http://localhost:4567).'):' · se aplica en el próximo ciclo.');
  $('key').value='';load(true);if(r.setup&&!r.serviceError)setTimeout(()=>{location.href='http://localhost:4567'},7000)};
+async function accounts(){
+ const l=await get('/api/accounts'),box=$('acclist');box.textContent='';
+ const row=(t,b)=>{const d=document.createElement('div');d.style.cssText='display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd)';const s=document.createElement('span');s.textContent=t;s.style.flex='1';d.append(s);if(b)d.append(b);box.append(d)};
+ row('default · cuenta principal (~/.claude) — la key de arriba');
+ for(const a of l){const b=document.createElement('button');b.textContent='Quitar';b.onclick=async()=>{if(!confirm('¿Quitar la cuenta "'+a.name+'" del recolector? (no borra su carpeta de Claude Code)'))return;await post('/api/accounts/remove',{name:a.name});accounts()};
+  row(a.name+' · '+a.keyPreview+' · abrí Claude Code con: '+a.command,b)}}
+$('aadd').onclick=async()=>{const m=$('amsg');m.className='';m.textContent='Validando…';$('aadd').disabled=true;
+ let r;try{r=await post('/api/accounts/add',{name:$('an').value,key:$('ak').value})}catch(x){r={ok:false,error:String(x)}}
+ $('aadd').disabled=false;
+ if(!r.ok){m.className='bad';m.textContent=r.error;return}
+ m.className='ok';m.textContent='✔ Agregada. Abrí Claude Code con "'+r.commandName+'" y hacé /login con esa cuenta (una sola vez).'+(r.onPath?'':' Agregá '+r.command.replace(/[\\/][^\\/]*$/,'')+' a tu PATH.');
+ $('an').value='';$('ak').value='';accounts()};
 $('bp').onclick=async()=>{await post('/api/pause?value='+(S.paused?0:1));load(false)};
-$('bs').onclick=()=>{load(false);live()};load(true);live();setInterval(()=>{load(false);live()},3000);
+$('bs').onclick=()=>{load(false);live()};load(true);live();accounts();setInterval(()=>{load(false);live()},3000);
 </script></body></html>`
