@@ -5,19 +5,18 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { saveSettings, setEnvVars } from '../src/ui.ts'
 
-const good = { key: 'omk_x', url: 'https://x.test/api', intervalSeconds: 30, claudeDir: os.tmpdir(), copilotEnabled: false, copilotDir: '', metadataOnly: false }
+const good = { key: 'omk_x', url: 'https://x.test/api', intervalSeconds: 30, claudeDir: os.tmpdir(), copilotEnabled: false, copilotDir: '' }
 const errorsOf = async (over: object) => {
   const r = await saveSettings({ ...good, ...over })
   assert.equal(r.ok, false); return (r as { errors: Record<string, string> }).errors
 }
 
 // Todos estos casos fallan antes de tocar la red o el disco del usuario.
-test('valida la carpeta de Claude, el intervalo, la URL y la key', async () => {
+test('valida la carpeta de Claude, el intervalo y la key', async () => {
   assert.ok((await errorsOf({ claudeDir: '/no/existe/jamas' })).claudeDir)
   assert.ok((await errorsOf({ claudeDir: '' })).claudeDir)
   assert.ok((await errorsOf({ intervalSeconds: 2 })).intervalSeconds)
   assert.ok((await errorsOf({ intervalSeconds: 30.5 })).intervalSeconds)
-  assert.ok((await errorsOf({ url: 'ftp://x' })).url)
   assert.ok((await errorsOf({ key: 'abc' })).key)
 })
 

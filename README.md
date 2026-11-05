@@ -28,7 +28,7 @@ npx octomatelabs-data init
 | `once` | Un solo ciclo |
 | `backfill --days N` | Importa el histórico (por defecto 30 días) |
 | `preview [--days N]` | Imprime el JSON exacto que se enviaría (ya sanitizado) sin enviar nada |
-| `ui [--port N]` | Panel local en `http://localhost:4567`: estado, pausar/reanudar, alternar solo-métricas y ver lo enviado |
+| `ui [--port N]` | Panel local en `http://localhost:4567`: configuración (key, intervalo, carpetas), pausar/reanudar y ver lo enviado |
 | `status` / `ping` | Estado y prueba de conexión |
 | `install-service` / `uninstall-service` | Servicio en segundo plano |
 

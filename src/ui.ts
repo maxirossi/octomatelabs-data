@@ -40,14 +40,13 @@ export type FieldErrors = Record<string, string>
 export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: true; label: string | null } | { ok: false; errors: FieldErrors }> {
   const cur = loadConfig()
   const errors: FieldErrors = {}
-  const url = String(b.url ?? '').trim().replace(/\/+$/, '')
+  const url = cur.url // la URL de la API no es editable desde la UI
   const key = String(b.key ?? '').trim() || cur.key
   const interval = Number(b.intervalSeconds)
   const claudeDir = expandHome(String(b.claudeDir ?? '').trim())
   const copilotEnabled = b.copilotEnabled === true
   const copilotDir = expandHome(String(b.copilotDir ?? '').trim())
 
-  if (!/^https?:\/\/[^\s/]+/.test(url)) errors.url = 'Tiene que ser una URL http:// o https://'
   if (!key) errors.key = 'Falta la key'
   else if (!key.startsWith('omk_')) errors.key = 'La key tiene que empezar con omk_'
   if (!Number.isInteger(interval) || interval < 5 || interval > 3600) errors.intervalSeconds = 'Un número entero entre 5 y 3600 segundos'
@@ -69,7 +68,6 @@ export async function saveSettings(b: Record<string, unknown>): Promise<{ ok: tr
   setEnvVars({
     OCTOMATELABS_URL: url, OCTOMATELABS_KEY: key, SYNC_INTERVAL_SECONDS: String(interval), CLAUDE_PROJECTS_DIR: claudeDir,
     COPILOT_ENABLED: String(copilotEnabled), ...(copilotDir ? { COPILOT_STORAGE_DIR: copilotDir } : {}),
-    METADATA_ONLY: String(b.metadataOnly === true),
   })
   return { ok: true, label }
 }
@@ -193,9 +191,8 @@ h3{font-size:14px;margin:22px 0 6px}.mut{color:var(--mut)}[hidden]{display:none!
 <h2>Conexión y fuentes</h2><p class="sub" id="subt">En OctoMateLabs → <b>Mi consumo</b> → <i>Generar key</i>, y pegala acá.</p>
 <div class="grid">
 <div class="full"><label for="key">Key</label><div class="keyrow"><input type="password" id="key" placeholder="omk_..." spellcheck="false"><button type="button" id="eye">Ver</button></div><div class="hint" id="khint"></div><div class="err" id="e-key"></div></div>
-<div class="full"><label for="url">URL de la API</label><input type="text" id="url" spellcheck="false"><div class="err" id="e-url"></div></div>
-<div><label for="intervalSeconds">Intervalo de sincronización (segundos)</label><input type="number" id="intervalSeconds" min="5" max="3600"><div class="hint">Entre 5 y 3600.</div><div class="err" id="e-intervalSeconds"></div></div>
-<div><label class="sw" style="margin-top:22px"><input type="checkbox" id="metadataOnly"> Enviar solo métricas</label><div class="hint">Sin prompts ni responses: solo tokens, modelos y tiempos.</div></div>
+<div class="full"><label for="url">URL de la API</label><input type="text" id="url" readonly tabindex="-1" style="opacity:.7;cursor:not-allowed"></div>
+<div class="full"><label for="intervalSeconds">Intervalo de sincronización (segundos)</label><input type="number" id="intervalSeconds" min="5" max="3600"><div class="hint">Entre 5 y 3600.</div><div class="err" id="e-intervalSeconds"></div></div>
 <div class="full"><label for="claudeDir">Carpeta de Claude Code</label><input type="text" id="claudeDir" spellcheck="false" data-path="1"><div class="err" id="e-claudeDir"></div></div>
 <div class="full"><label class="sw"><input type="checkbox" id="copilotEnabled"> Incluir GitHub Copilot Chat (VS Code)</label>
 <div id="cop" style="margin-top:8px"><label for="copilotDir">Carpeta workspaceStorage de VS Code</label><input type="text" id="copilotDir" spellcheck="false" data-path="1"><div class="err" id="e-copilotDir"></div></div></div>
@@ -212,7 +209,7 @@ const $=id=>document.getElementById(id);
 const H={'x-octomate-ui':'1','content-type':'application/json'};
 const get=p=>fetch(p).then(r=>r.json());
 const post=(p,b)=>fetch(p,{method:'POST',headers:H,body:b?JSON.stringify(b):undefined}).then(r=>r.json());
-const FIELDS=['key','url','intervalSeconds','claudeDir','copilotDir'];
+const FIELDS=['key','intervalSeconds','claudeDir','copilotDir'];
 function mark(f,msg,ok){const i=$(f),e=$('e-'+f);if(!i||!e)return;e.textContent=msg||'';i.classList.toggle('bad',!!msg);i.classList.toggle('good',!msg&&!!ok)}
 async function checkPath(f){const v=$(f).value.trim();if(f==='copilotDir'&&!$('copilotEnabled').checked){mark(f,'');return}
  if(!v){mark(f,'Obligatorio');return}const r=await get('/api/check-path?p='+encodeURIComponent(v));mark(f,r.exists?'':'Esa carpeta no existe',r.exists)}
@@ -224,7 +221,7 @@ async function load(fill){
  S=await get('/api/status');
  const pill=$('pill');pill.textContent=!S.hasKey?'Sin configurar':S.paused?'En pausa':'Activo';pill.className='pill '+(!S.hasKey?'off':S.paused?'off':'on');
  if(fill){$('url').value=S.url;$('intervalSeconds').value=S.intervalSeconds;$('claudeDir').value=S.claudeDir;$('copilotDir').value=S.copilotDir||'';
-  $('copilotEnabled').checked=S.copilotEnabled;$('metadataOnly').checked=S.metadataOnly;$('cop').hidden=!S.copilotEnabled;
+  $('copilotEnabled').checked=S.copilotEnabled;$('cop').hidden=!S.copilotEnabled;
   $('khint').textContent=S.hasKey?'Key guardada ('+S.keyPreview+'). Dejá el campo vacío para conservarla o pegá otra para reemplazarla.':'';
   $('subt').hidden=S.hasKey;$('sb').textContent=S.hasKey?'Guardar cambios':'Guardar y conectar'}
  $('bp').textContent=S.paused?'Reanudar envío':'Pausar envío';
@@ -238,8 +235,8 @@ document.querySelectorAll('[data-path]').forEach(i=>i.addEventListener('blur',()
 $('key').addEventListener('input',()=>{const v=$('key').value.trim();mark('key',v&&!v.startsWith('omk_')?'La key tiene que empezar con omk_':'')});
 $('intervalSeconds').addEventListener('input',()=>{const n=Number($('intervalSeconds').value);mark('intervalSeconds',Number.isInteger(n)&&n>=5&&n<=3600?'':'Un número entero entre 5 y 3600')});
 $('sf').onsubmit=async e=>{e.preventDefault();FIELDS.forEach(f=>mark(f,''));$('sb').disabled=true;$('msg').className='';$('msg').textContent='Validando…';
- let r;try{r=await post('/api/settings',{key:$('key').value,url:$('url').value,intervalSeconds:Number($('intervalSeconds').value),claudeDir:$('claudeDir').value,
-  copilotEnabled:$('copilotEnabled').checked,copilotDir:$('copilotDir').value,metadataOnly:$('metadataOnly').checked})}catch(x){r={ok:false,errors:{},error:String(x)}}
+ let r;try{r=await post('/api/settings',{key:$('key').value,intervalSeconds:Number($('intervalSeconds').value),claudeDir:$('claudeDir').value,
+  copilotEnabled:$('copilotEnabled').checked,copilotDir:$('copilotDir').value})}catch(x){r={ok:false,errors:{},error:String(x)}}
  $('sb').disabled=false;
  if(!r.ok){Object.entries(r.errors||{}).forEach(([f,m])=>mark(f,m));$('msg').className='bad';$('msg').textContent='Revisá los campos marcados.';const b=document.querySelector('.bad');if(b)b.focus();return}
  $('msg').className='ok';$('msg').textContent='✔ Guardado'+(r.label?' · key "'+r.label+'"':'')+(r.setup?(r.serviceError?' · Servicio: '+r.serviceError:' · Quedó corriendo en segundo plano; podés cerrar esta pestaña.'):' · se aplica en el próximo ciclo.');
